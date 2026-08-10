@@ -155,4 +155,55 @@ class MCPClient {
 
     return finalText.join("\n");
   }
+
+  async chatLoop() {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    try {
+      console.log("\nMCP Client Started!");
+      console.log("Type your queries or 'quit' to exit.");
+
+      while (true) {
+        const message = await rl.question("\nQuery: ");
+        if (message.toLowerCase() === "quit") {
+          break;
+        }
+        const response = await this.processQuery(message);
+        console.log("\n" + response);
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  async cleanup() {
+    await this.mcp.close();
+  }
 }
+
+async function main() {
+  if (process.argv.length < 3) {
+    console.log("Usage: node index.ts <path_to_server_script>");
+    return;
+  }
+
+  const mcpClient = new MCPClient();
+  let exitCode = 0;
+
+  try {
+    await mcpClient.connectToServer(process.argv[2]!);
+    await mcpClient.chatLoop();
+  } catch (e) {
+    console.error("Error:", e);
+    exitCode = 1; // Set failure exit code
+  } finally {
+    // Perform cleanup once here, regardless of success or failure
+    await mcpClient.cleanup();
+    process.exit(exitCode);
+  }
+}
+
+main();
