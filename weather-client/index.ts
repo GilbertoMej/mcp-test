@@ -66,11 +66,93 @@ class MCPClient {
       });
       console.log(
         "Conectado el servidor con las herramientas: ",
-       toolsResult.tools.map((tool) => tool.name)
+        toolsResult.tools.map((tool) => tool.name),
       );
     } catch (e) {
       console.log("La conexion con el servidor MCP ha fallado: ", e);
       throw e;
     }
+  }
+
+  async processQuery(query: string) {
+    const messages: ChatCompletionMessageParam[] = [
+      {
+        role: "user",
+        content: query,
+      },
+    ];
+
+    // 1. Initial call to the model
+    const response = await this.openrouter.chat.completions.create({
+      model: "nvidia/nemotron-3-super-120b-a12b:free",
+      messages,
+      // Only pass the tools array if it's not empty to avoid API errors
+      ...(this.tools.length > 0 && { tools: this.tools }),
+    });
+
+    const message = response.choices[0]?.message;
+    if (!message) {
+      throw new Error("No message returned from the model.");
+    }
+
+    const finalText: string[] = [];
+
+    // If the model included any direct text response, save it
+    if (message.content) {
+      finalText.push(message.content);
+    }
+
+    // 2. Check if the model decided to use any tools
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      // CRITICAL: OpenAI requires appending the assistant's tool_call message
+      // to the conversation history before appending the results.
+      messages.push(message);
+
+      for (const toolCall of message.tool_calls) {
+        if (toolCall.type !== "function") {
+          continue;
+        }
+
+        const toolName = toolCall.function.name;
+        // OpenAI returns arguments as a JSON string, not a parsed object
+        const toolArgs = JSON.parse(toolCall.function.arguments || "{}");
+
+        // Execute the tool via MCP
+        const result = await this.mcp.callTool({
+          name: toolName,
+          arguments: toolArgs,
+        });
+
+        finalText.push(
+          `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`,
+        );
+
+        // Extract the text from the MCP tool result
+        const toolResultText = result.content
+          .filter((block: any) => block.type === "text")
+          .map((block: any) => block.text)
+          .join("\n");
+
+        // 3. Append the tool result using the "tool" role
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: toolResultText,
+        });
+      }
+
+      // 4. Make a second call so the model can read the tool result and answer the user
+      const finalResponse = await this.openrouter.chat.completions.create({
+        model: "nvidia/nemotron-3-super-120b-a12b:free",
+        messages,
+      });
+
+      const finalMessage = finalResponse.choices[0]?.message;
+      if (finalMessage?.content) {
+        finalText.push(finalMessage.content);
+      }
+    }
+
+    return finalText.join("\n");
   }
 }
